@@ -512,6 +512,7 @@ classdef DR_MRAPC_Pilot < handle
             u = obj.PID.Params.Kp.*xi_e([1,3,5],k) + ...
                     obj.PID.Params.Ki.*obj.PID.Utils.SUM * obj.Base.Params.Ts + ...
                     obj.PID.Params.Kd.*[TD_x.output;TD_y.output;TD_z.output];
+            u = clip(u,obj.Base.Params.umin,obj.Base.Params.umax);
             obj.PID.Utils.SUM = obj.PID.Utils.SUM + xi_e;
         else
         end
