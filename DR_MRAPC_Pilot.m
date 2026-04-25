@@ -509,11 +509,11 @@ classdef DR_MRAPC_Pilot < handle
             obj.PID.Utils.TD_x.update(xi_e(1));
             obj.PID.Utils.TD_y.update(xi_e(3));
             obj.PID.Utils.TD_z.update(xi_e(5));
-            u = obj.PID.Params.Kp.*xi_e([1,3,5],k) + ...
+            u = obj.PID.Params.Kp.*xi_e([1,3,5]) + ...
                     obj.PID.Params.Ki.*obj.PID.Utils.SUM * obj.Base.Params.Ts + ...
                     obj.PID.Params.Kd.*[obj.PID.Utils.TD_x.output;obj.PID.Utils.TD_y.output;obj.PID.Utils.TD_z.output];
             u = clip(u,obj.Base.Params.umin,obj.Base.Params.umax);
-            obj.PID.Utils.SUM = obj.PID.Utils.SUM + xi_e;
+            obj.PID.Utils.SUM = obj.PID.Utils.SUM + xi_e([1,3,5]);
         else
         end
         end
@@ -528,7 +528,7 @@ classdef DR_MRAPC_Pilot < handle
             obj.PID.Utils.TD_x = TrckDiff(Ts,obj.PID.Params.r0,obj.PID.Params.h*Ts);
             obj.PID.Utils.TD_y = TrckDiff(Ts,obj.PID.Params.r0,obj.PID.Params.h*Ts);
             obj.PID.Utils.TD_z = TrckDiff(Ts,obj.PID.Params.r0,obj.PID.Params.h*Ts);
-            obj.PID.Utils.SUM = 0;
+            obj.PID.Utils.SUM = [0;0;0];
         end
         function build_MPC_prob(obj)
             %BUILD_MPC_PROB 重建MPC优化问题
