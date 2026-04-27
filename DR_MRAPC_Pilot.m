@@ -512,10 +512,26 @@ classdef DR_MRAPC_Pilot < handle
             u = obj.PID.Params.Kp.*xi_e([1,3,5]) + ...
                     obj.PID.Params.Ki.*obj.PID.Utils.SUM * obj.Base.Params.Ts + ...
                     obj.PID.Params.Kd.*[obj.PID.Utils.TD_x.output;obj.PID.Utils.TD_y.output;obj.PID.Utils.TD_z.output];
-            u = clip(u,obj.Base.Params.umin,obj.Base.Params.umax);
             obj.PID.Utils.SUM = obj.PID.Utils.SUM + xi_e([1,3,5]);
         else
+        % --------------- MPC ---------------
+            % 注意：必须取预测时域长度的参考值送入MPC
+            ur_part = obj.Reference.u_r(:,k:k+obj.MPC.Params.horizen-1);        % 取预测时域长度，用于约束
+            xr_part = obj.Reference.xi_r(:,k+1:k+obj.MPC.Params.horizen);       % 取预测时域长度，用于约束
+            if obj.mode == 1
+                u_mpc = obj.Reference.u_r(:,k) - ...
+                        MPCSim_solv(obj.MPC.Utils.prob, xi_e(:,k), xr_part, ur_part);
+            elseif obj.mode == 2 || obj.mode == 4
+            elseif obj.mode == 3
+            end
+        % --------------- DR-MPC ---------------
+        % --------------- MRAPC ---------------
+        % --------------- DR-MRAPC ---------------
+        % --------------- 执行量 ---------------
+            u = u_mpc;
         end
+        % 返回最终结果：
+        u = clip(u,obj.Base.Params.umin,obj.Base.Params.umax);
         end
     end
     %% ================================================================
