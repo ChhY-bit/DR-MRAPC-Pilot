@@ -284,6 +284,13 @@ classdef DR_MRAPC_Pilot < handle
             obj.MPC.Params.R = R;
             obj.MPC.Params.horizen = horizen;
             obj.build_MPC_prob;
+            
+            % 重新生成轨迹生成器（因为horizen改变，需要更多数据）
+            Ts = obj.Base.Params.Ts;
+            T = obj.Base.Params.T;
+            obj.Reference.TrajGen = TrajGen(0:Ts:T+horizen*Ts);
+            obj.build_traj;  % 重新生成轨迹
+            
             fprintf("[Info] [DR-MRAPC_Pilot]\t MPC params updated (horizen=%d), problem rebuilt\n", horizen);
         end
         function set_bound_state(obj,xmax,xmin)
