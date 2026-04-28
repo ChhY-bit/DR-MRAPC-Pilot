@@ -11,8 +11,8 @@ classdef DR_MRAPC_Pilot < handle
         mode_names = { ...                          % 控制模式名称 - [cell][char]
                       'PID', ...
                       'MPC', ...
-                      'MRAPC', ...
                       'DR-MPC', ...
+                      'MRAPC', ...
                       'DR-MRAPC'}
         traj_names = { ...                          % 轨迹类型名称 - [cell][char]
                       'fixed_point', ...
@@ -22,8 +22,8 @@ classdef DR_MRAPC_Pilot < handle
         mode                                        % 控制模式 - [value]
                                                     %   0: PID
                                                     %   1: MPC
-                                                    %   2: MRAPC
-                                                    %   3: DR-MPC
+                                                    %   2: DR-MPC
+                                                    %   3: MRAPC
                                                     %   4: DR-MRAPC
         traj                                        % 轨迹选择 - [value]
                                                     %   0: 定点
@@ -85,7 +85,10 @@ classdef DR_MRAPC_Pilot < handle
             %   .cnst_fun_Kx-   [handle]: Kx的约束函数
             %   .H          -   [matrix]: 反馈镇定矩阵 (3x6)
             %   .P          -   [matrix]: Lyapunov解 (6x6)
-            %   .LAW        -   [class]: 自适应律
+            %   .LAW        -   [class]:  自适应律
+            %   .xi_m       -   [array]:  参考状态 (6xN)
+            %   .Kx         -   [matrix]: Kx自适应增益 (3x6)
+            %   .Ka         -   [matrix]: Ka自适应增益 (3x3)
 
         % ────────────── DR 抗扰补偿 ──────────────
         DR                                          % 抗扰补偿机制 - [struct]
@@ -104,6 +107,8 @@ classdef DR_MRAPC_Pilot < handle
             %   .DRCx       -   [class]:  x通道抗扰补偿
             %   .DRCy       -   [class]:  y通道抗扰补偿
             %   .DRCz       -   [class]:  z通道抗扰补偿
+            %   .xi_n       -   [array]:  标称状态 (6xN)
+            %   .d_hat      -   [array]:  扰动观测值 (6xN)
 
         % ────────────── Reference 参考给定 ──────────────
         Reference                                   % 参考给定 - [struct]
@@ -142,7 +147,7 @@ classdef DR_MRAPC_Pilot < handle
     methods
 
         %% ═══════════════ 1. 初始化 ═══════════════
-        function obj = DR_MRAPC_Pilot(Ts,T)
+        function obj = DR_MRAPC_Pilot(Ts,T,xi_ini)
             %UNTITLED 构造此类的实例
             %   此处显示详细说明
             fprintf("[Info] [DR-MRAPC_Pilot]\t Customized Pilot initializing...\n")
@@ -193,6 +198,14 @@ classdef DR_MRAPC_Pilot < handle
             obj.build_MRA_H;
             obj.build_DR_DRC;
             obj.build_DR_DOB;
+            obj.MRA.Utils.xi_m = zeros(6,length(0:Ts:T));
+            obj.MRA.Utils.xi_m(:,1) = xi_ini;
+            obj.MRA.Utils.Kx = zeros(3,6,length(0:Ts:T));
+            obj.MRA.Utils.Ka = zeros(3,3,length(0:Ts:T));
+            obj.MRA.Utils.Ka(:,:,1) = eye(3);
+            obj.DR.Utils.xi_n = obj.MRA.Utils.xi_m;
+            obj.DR.Utils.d_hat = zeros(6,length(0:Ts:T));
+
             %% 1.3.轨迹初始化
             obj.Reference.TrajGen = TrajGen(0:Ts:T+obj.MPC.Params.horizen*Ts);   % 多给定horizon*Ts
             % ---------- 默认参数 ----------
@@ -520,18 +533,88 @@ classdef DR_MRAPC_Pilot < handle
             xr_part = obj.Reference.xi_r(:,k+1:k+obj.MPC.Params.horizen);       % 取预测时域长度，用于约束
             if obj.mode == 1
                 u_mpc = obj.Reference.u_r(:,k) - ...
-                        MPCSim_solv(obj.MPC.Utils.prob, xi_e(:,k), xr_part, ur_part);
+                        MPCSim_solv(obj.MPC.Utils.prob, xi_e, xr_part, ur_part);
             elseif obj.mode == 2 || obj.mode == 4
+                u_mpc = obj.Reference.u_r(:,k) - ...
+                        MPCSim_solv(obj.MPC.Utils.prob, obj.Reference.xi_r(:,k)-obj.DR.Utils.xi_n(:,k), ...
+                        xr_part,ur_part);   % 抗扰时采用\xi_n
             elseif obj.mode == 3
+                u_mpc = obj.Reference.u_r(:,k) - ...
+                        MPCSim_solv(obj.MPC.Utils.prob, obj.Reference.xi_r(:,k)-obj.MRA.Utils.xi_m(:,k), xr_part, ur_part);   % 自适应时采用\xi_m
             end
         % --------------- DR-MPC ---------------
+            if obj.mode == 2 || obj.mode == 4
+                obj.DR.Utils.xi_n(:,k+1) = obj.Base.System.Ad*obj.DR.Utils.xi_n(:,k) + ...
+                                        obj.Base.System.Bd*u_mpc;  % 更新标称模型（处理非匹配）
+                obj.DR.Utils.DRCx.update(xi_mea(1:2),obj.DR.Utils.xi_n(1:2,k),obj.DR.Utils.d_hat(1:2,k));
+                obj.DR.Utils.DRCy.update(xi_mea(3:4),obj.DR.Utils.xi_n(3:4,k),obj.DR.Utils.d_hat(3:4,k));
+                obj.DR.Utils.DRCz.update(xi_mea(5:6),obj.DR.Utils.xi_n(5:6,k),obj.DR.Utils.d_hat(5:6,k));
+                % 实施抗扰补偿：
+                comp = [obj.DR.Utils.DRCx.compensation; ...
+                        obj.DR.Utils.DRCy.compensation; ...
+                        obj.DR.Utils.DRCz.compensation];
+                u_D = u_mpc + comp;
+            else
+                u_D = u_mpc;
+            end
+            % 扰动观测：
+            obj.DR.Utils.DOB.update(u_D,xi_mea);
+            obj.DR.Utils.d_hat(:,k+1) = obj.DR.Utils.DOB.d_hat;
         % --------------- MRAPC ---------------
-        % --------------- DR-MRAPC ---------------
+            if obj.mode == 3 || obj.mode == 4
+                obj.MRA.Utils.xi_m(:,k+1) = obj.Base.System.Ad*obj.MRA.Utils.xi_m(:,k) + ...
+                                        obj.Base.System.Bd*u_D;
+                e_mrac = obj.MRA.Utils.xi_m(:,k) - xi_mea;
+                obj.MRA.Utils.LAW.update(u_D,xi_mea,obj.MRA.Utils.xi_m(:,k));
+                obj.MRA.Utils.Ka(:,:,k) = obj.MRA.Utils.LAW.Ka;
+                obj.MRA.Utils.Kx(:,:,k) = obj.MRA.Utils.LAW.Kx;
+                u_M = obj.MRA.Utils.Ka(:,:,k)*(obj.MRA.Utils.Kx(:,:,k)*xi_mea + u_D) + ...
+                      obj.MRA.Utils.H * e_mrac;
+            else
+                u_M = u_D;
+            end
         % --------------- 执行量 ---------------
-            u = u_mpc;
+            u = u_M;
         end
         % 返回最终结果：
         u = clip(u,obj.Base.Params.umin,obj.Base.Params.umax);
+        end
+
+        %% ═══════════════ 6. 数据获取接口 ═══════════════
+        function [x,y,z,dx,dy,dz,ddx,ddy,ddz] = get_reference(obj)
+            %GET_REFERENCE 获取当前轨迹数据
+            %   返回当前轨迹的完整数据，确保长度符合 0:Ts:T
+            %   x, y, z       - 位置 (1 x N)
+            %   dx, dy, dz    - 速度 (1 x N)
+            %   ddx, ddy, ddz - 加速度 (1 x N)
+            N = length(0:obj.Base.Params.Ts:obj.Base.Params.T);
+            xi_r = obj.Reference.xi_r(:,1:N);
+            u_r = obj.Reference.u_r(:,1:N);
+            x  = xi_r(1,:);
+            dx = xi_r(2,:);
+            y  = xi_r(3,:);
+            dy = xi_r(4,:);
+            z  = xi_r(5,:);
+            dz = xi_r(6,:);
+            ddx = u_r(1,:);
+            ddy = u_r(2,:);
+            ddz = u_r(3,:);
+        end
+
+        function [Kx,Ka] = get_adaptparams(obj)
+            %GET_ADAPTPARAMS 获取存储的自适应参数
+            %   Kx - 状态反馈自适应增益 (3 x 6 x N)
+            %   Ka - 前馈自适应增益 (3 x 3 x N)
+            N = length(0:obj.Base.Params.Ts:obj.Base.Params.T);
+            Kx = obj.MRA.Utils.Kx(:,:,1:N);
+            Ka = obj.MRA.Utils.Ka(:,:,1:N);
+        end
+
+        function d_hat = get_disturbance(obj)
+            %GET_DISTURBANCE 获取存储的扰动观测值
+            %   d_hat - 扰动估计 (6 x N)
+            N = length(0:obj.Base.Params.Ts:obj.Base.Params.T);
+            d_hat = obj.DR.Utils.d_hat(:,1:N);
         end
     end
     %% ================================================================
